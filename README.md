@@ -12,9 +12,9 @@
 ## 🚀 使用方法 (Usage)
 
 ### 1. 下載腳本
-```bash
-git clone　https://github.com/passerby7890/cloudns_ddns.git
-cd cloudns_ddns
+
+Bash
+curl -o cloudns_ddns.sh https://raw.githubusercontent.com/passerby7890/cloudns_ddns/main/cloudns_ddns.sh
 
 2. 賦予執行權限
 Bash
