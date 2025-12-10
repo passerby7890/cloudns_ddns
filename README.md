@@ -13,16 +13,15 @@
 
 ### 1. 下載腳本
 
-Bash
 curl -o cloudns_ddns.sh https://raw.githubusercontent.com/passerby7890/cloudns_ddns/main/cloudns_ddns.sh
 
 2. 賦予執行權限
-Bash
+
 chmod +x cloudns_ddns.sh
 
-3. 執行安裝
+4. 執行安裝
 請使用 root 權限執行：
-Bash
+
 sudo ./cloudns_ddns.sh
 
 4. 依照提示操作
