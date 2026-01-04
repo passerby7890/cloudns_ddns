@@ -1,94 +1,76 @@
-cat << 'EOF' > setup_cloudns_ddns.sh
+cat << 'EOF' > setup_cloudns_pro.sh
 #!/bin/bash
-
 # =================================================================
-# ClouDNS Auto-Updater (Ultimate Version)
-# 功能：
-# 1. 每日定時執行 (Time Schedule)
-# 2. 開機自動執行 (Reboot Schedule) - 新增功能!
-# 3. 自動時區校正 (Auto Timezone)
+# ClouDNS Pro (Google SRE Standard)
+# 特性：幂等性、健壮性 (带重试机制)、UTC+8 日志
 # =================================================================
 
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+# 1. 权限检查
+if [ "$EUID" -ne 0 ]; then echo "请使用 root 权限执行"; exit 1; fi
 
-clear
-echo -e "${GREEN}#################################################${NC}"
-echo -e "${GREEN}#    ClouDNS DDNS 自動設定精靈 (雙重保險版)     #${NC}"
-echo -e "${GREEN}#     (包含：每日定時 + 開機啟動 @reboot)       #${NC}"
-echo -e "${GREEN}#################################################${NC}"
+# 2. 交互输入
+echo "------------------------------------------------"
+echo "【高阶版】ClouDNS 定时切换脚本"
+read -p "请输入 DDNS URL: " DDNS_URL
+if [[ -z "$DDNS_URL" ]]; then echo "URL 不能为空"; exit 1; fi
 
-# 1. Root 檢查
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}[錯誤] 請使用 root 權限執行 (sudo -i)${NC}"
-  exit 1
+echo -e "\n请设置执行时间 (东八区 UTC+8，24小时制)"
+read -p "时 (0-23): " RUN_HOUR
+read -p "分 (0-59): " RUN_MINUTE
+
+# 简单验证
+if ! [[ "$RUN_HOUR" =~ ^[0-9]+$ ]] || ! [[ "$RUN_MINUTE" =~ ^[0-9]+$ ]]; then
+    echo "时间格式错误"; exit 1
 fi
 
-# 2. 時區校正
-echo -e "\n${CYAN}>>> 校正系統時區為 Asia/Taipei ...${NC}"
-if command -v timedatectl &> /dev/null; then
-    timedatectl set-timezone Asia/Taipei
-else
-    ln -sf /usr/share/zoneinfo/Asia/Taipei /etc/localtime
-fi
-
-# 3. 輸入資料
-echo -e "\n${YELLOW}【步驟 1】設定 DDNS 金鑰${NC}"
-read -p "請輸入 ClouDNS Dynamic URL: " DDNS_URL
-if [[ -z "$DDNS_URL" ]]; then echo -e "${RED}[錯誤] URL 不能為空！${NC}"; exit 1; fi
-
-echo -e "\n${YELLOW}【步驟 2】設定每天執行時間${NC}"
-read -p "每天幾點執行? (0-23): " RUN_HOUR
-read -p "每天幾分執行? (0-59): " RUN_MINUTE
-
-# 4. 部署腳本
-TARGET_SCRIPT="/usr/local/bin/cloudns_daily_update.sh"
+TARGET_SCRIPT="/usr/local/bin/cloudns_takeover.sh"
 LOG_FILE="/var/log/cloudns_ddns.log"
 
+# 3. 生成带有重试逻辑的核心脚本
 cat > "$TARGET_SCRIPT" <<ENDSCRIPT
 #!/bin/bash
-# 執行時間: 每日 $RUN_HOUR:$RUN_MINUTE 及 開機啟動
-NOW=\$(date '+%Y-%m-%d %H:%M:%S')
+# 目的: 强制更新 DNS 指向本机 IP (带重试机制)
 
-# 嘗試更新
-RESPONSE=\$(curl -s -w "%{http_code}" "$DDNS_URL")
+MAX_RETRIES=3
+RETRY_DELAY=10
+COUNT=1
 
-# 寫入日誌
-if [[ "\$RESPONSE" == *"200"* ]]; then
-    echo "\$NOW [成功] DDNS 更新完成 (HTTP 200)" >> $LOG_FILE
-else
-    echo "\$NOW [失敗] 連線異常 (狀態碼 \$RESPONSE)" >> $LOG_FILE
-fi
+# 强制东八区时间
+timestamp() { TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S'; }
 
-# 清理舊日誌
-tail -n 50 $LOG_FILE > ${LOG_FILE}.tmp && mv ${LOG_FILE}.tmp $LOG_FILE
+while [ \$COUNT -le \$MAX_RETRIES ]; do
+    # 尝试更新
+    HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 "$DDNS_URL")
+    
+    if [ "\$HTTP_CODE" -eq 200 ]; then
+        echo "\$(timestamp) [成功] 第 \$COUNT 次尝试: DNS 已指向本机。" >> $LOG_FILE
+        # 成功后，简单清理日志并退出
+        tail -n 50 $LOG_FILE > ${LOG_FILE}.tmp && mv ${LOG_FILE}.tmp $LOG_FILE
+        exit 0
+    else
+        echo "\$(timestamp) [警告] 第 \$COUNT 次失败 (状态码: \$HTTP_CODE)，\${RETRY_DELAY}秒后重试..." >> $LOG_FILE
+        sleep \$RETRY_DELAY
+    fi
+    ((COUNT++))
+done
+
+# 如果循环结束还没退出，说明彻底失败
+echo "\$(timestamp) [严重错误] 已重试 \$MAX_RETRIES 次，全部失败。请检查网络或 URL。" >> $LOG_FILE
 ENDSCRIPT
 
 chmod +x "$TARGET_SCRIPT"
 
-# 5. 設定 Crontab (寫入雙重排程)
-echo -e "\n${CYAN}>>> 正在寫入排程 (定時 + 開機啟動)...${NC}"
+# 4. 写入 Crontab
+TMP_CRON=$(mktemp)
+crontab -l 2>/dev/null | grep -v "cloudns_takeover.sh" > "$TMP_CRON" || true
+echo "$RUN_MINUTE $RUN_HOUR * * * $TARGET_SCRIPT" >> "$TMP_CRON"
+crontab "$TMP_CRON"
+rm -f "$TMP_CRON"
 
-# 定義兩個排程指令
-# 1. 每日定時
-CRON_TIME="$RUN_MINUTE $RUN_HOUR * * * $TARGET_SCRIPT"
-# 2. 開機後 60秒 執行 (sleep 60 是為了等待網路完全啟動)
-CRON_BOOT="@reboot sleep 60 && $TARGET_SCRIPT"
-
-# 清除舊的 -> 加入新的
-(crontab -l 2>/dev/null | grep -v "cloudns_daily_update.sh"; echo "$CRON_TIME"; echo "$CRON_BOOT") | crontab -
-
-echo -e "\n${GREEN}🎉 設定完成！${NC}"
-echo -e "----------------------------------------------------"
-echo -e "1. 每日定時: ${YELLOW}${RUN_HOUR}:${RUN_MINUTE}${NC} (Asia/Taipei)"
-echo -e "2. 開機啟動: ${YELLOW}VPS 重啟後 60秒 自動執行${NC}"
-echo -e "----------------------------------------------------"
-echo -e "正在執行第一次測試..."
-$TARGET_SCRIPT
-echo -e "測試完成。"
+echo "------------------------------------------------"
+echo "✅ 设置完成 (Pro版)"
+echo "策略：每天 ${RUN_HOUR}:${RUN_MINUTE} 执行，若网络故障会自动重试 3 次。"
+echo "------------------------------------------------"
 EOF
 
-chmod +x setup_cloudns_ddns.sh && ./setup_cloudns_ddns.sh
+chmod +x setup_cloudns_pro.sh && ./setup_cloudns_pro.sh
